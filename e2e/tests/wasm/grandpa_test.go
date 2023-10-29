@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/cosmos/cosmos-sdk/types"
 	"io"
 	"os"
 	"testing"
@@ -184,14 +185,21 @@ func (s *GrandpaTestSuite) TestMsgTransfer_Succeeds_GrandpaContract() {
 	// https://github.com/cosmos/ibc-go/issues/4963
 	// Send 1.77 stake from cosmosUser to parachainUser
 	amountToSend := int64(1_770_000)
-	transfer := ibc.WalletAmount{
-		Address: polkadotUser.FormattedAddress(),
-		Denom:   cosmosChain.Config().Denom,
-		Amount:  math.NewInt(amountToSend),
-	}
-	tx, err := cosmosChain.SendIBCTransfer(ctx, "channel-0", cosmosUser.KeyName(), transfer, ibc.TransferOptions{})
-	s.Require().NoError(err)
-	s.Require().NoError(tx.Validate()) // test source wallet has decreased funds
+	s.AssertTxSuccess(
+		s.Transfer(
+			ctx,
+			cosmosChain,
+			cosmosUser,
+			"transfer",
+			"channel-0",
+			types.Coin{Denom: cosmosChain.Config().Denom, Amount: math.NewInt(amountToSend)},
+			cosmosUser.FormattedAddress(),
+			polkadotUser.FormattedAddress(),
+			s.GetTimeoutHeight(ctx, chainA),
+			0,
+			"",
+		),
+	)
 	err = testutil.WaitForBlocks(ctx, 15, cosmosChain, polkadotChain)
 	s.Require().NoError(err)
 
@@ -202,13 +210,22 @@ func (s *GrandpaTestSuite) TestMsgTransfer_Succeeds_GrandpaContract() {
 
 	// Send 1.16 stake from parachainUser to cosmosUser
 	amountToReflect := int64(1_160_000)
-	reflectTransfer := ibc.WalletAmount{
-		Address: cosmosUser.FormattedAddress(),
-		Denom:   "2", // stake
-		Amount:  math.NewInt(amountToReflect),
-	}
-	_, err = polkadotChain.SendIBCTransfer(ctx, "channel-0", polkadotUser.KeyName(), reflectTransfer, ibc.TransferOptions{})
-	s.Require().NoError(err)
+
+	s.AssertTxSuccess(
+		s.Transfer(
+			ctx,
+			polkadotChain,
+			polkadotUser,
+			"transfer",
+			"channel-0",
+			types.Coin{Denom: "2", Amount: math.NewInt(amountToReflect)},
+			polkadotUser.FormattedAddress(),
+			cosmosUser.FormattedAddress(),
+			s.GetTimeoutHeight(ctx, chainA),
+			0,
+			"",
+		),
+	)
 
 	// Send 1.88 "UNIT" from Alice to cosmosUser
 	amountUnits := math.NewInt(1_880_000_000_000)
@@ -217,6 +234,25 @@ func (s *GrandpaTestSuite) TestMsgTransfer_Succeeds_GrandpaContract() {
 		Denom:   "1", // UNIT
 		Amount:  amountUnits,
 	}
+
+	//kp, err := polkadotChain.GetKeyringPair("alice")
+	//s.Require().NoError(err)
+	//
+	//s.AssertTxSuccess(
+	//	s.Transfer(
+	//		ctx,
+	//		polkadotChain,
+	//		kp.Address,
+	//		"transfer",
+	//		"channel-0",
+	//		types.Coin{Denom: "1", Amount: amountUnits},
+	//		kp.Address,
+	//		cosmosUser.FormattedAddress(),
+	//		s.GetTimeoutHeight(ctx, chainA),
+	//		0,
+	//		"",
+	//	), m,
+	//)
 	_, err = polkadotChain.SendIBCTransfer(ctx, "channel-0", "alice", unitTransfer, ibc.TransferOptions{})
 	s.Require().NoError(err)
 
