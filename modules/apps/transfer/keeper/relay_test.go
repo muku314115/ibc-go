@@ -259,7 +259,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 	// taking one chain as the source, send coin to the other chain, receive and acknowledge
 	// this is mainly for cases where the receiving chain is also the source chain
-	// i.e. chainB sends coin to chainA(now), then chainA(new sender) sends it back(later)
+	// i.e. chainB sends coin to chainA(now), then chainA(new sender) sends it back
 	transferToSenderChain := func(path *ibctesting.Path, source, destination *ibctesting.Endpoint) {
 		// send coin from chainB to chainA, receive them, acknowledge them, and send back to chainB
 		coinFromBToA := sdk.NewCoin(sdk.DefaultBondDenom, amount)
