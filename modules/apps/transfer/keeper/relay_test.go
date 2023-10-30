@@ -257,13 +257,51 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 	mockHeight := clienttypes.NewHeight(1, 110)
 
-	interchainCoinTransfer := func(chain *ibctesting.TestChain, endpoint *ibctesting.Endpoint, coin sdk.Coin, sender, receiver string, height clienttypes.Height, memo string) *abcitypes.ExecTxResult {
-		// send coin from chainA to chainB
-		transferMsg := types.NewMsgTransfer(endpoint.ChannelConfig.PortID, endpoint.ChannelID, coin, sender, receiver, height, 0, memo)
-		res, err := chain.SendMsgs(transferMsg)
-		suite.Require().NoError(err) // message committed
+	// taking one chain as the source, send coin to the other chain, receive and acknowledge
+	// this is mainly for cases where the receiving chain is also the source chain
+	// i.e. chainB sends coin to chainA(now), then chainA(new sender) sends it back(later)
+	transferToSenderChain := func(path *ibctesting.Path, source, destination *ibctesting.Endpoint) {
+		// send coin from chainB to chainA, receive them, acknowledge them, and send back to chainB
+		coinFromBToA := sdk.NewCoin(sdk.DefaultBondDenom, amount)
+		res := interchainCoinTransfer(suite, suite.chainB, source, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), mockHeight, memo)
 
-		return res
+		packet, err := ibctesting.ParsePacketFromEvents(res.Events)
+		suite.Require().NoError(err)
+
+		err = path.RelayPacket(packet)
+		suite.Require().NoError(err) // relay committed
+
+		// NOTE: trace must be explicitly changed in malleate to test invalid cases
+		trace = types.ParseDenomTrace(types.GetPrefixedDenom(destination.ChannelConfig.PortID, destination.ChannelID, sdk.DefaultBondDenom))
+	}
+
+	// configure path, denomTrace and metadata
+	// reset vars
+	configureTestVariables := func() (*ibctesting.Path, types.DenomTrace, banktypes.Metadata) {
+		path := ibctesting.NewTransferPath(suite.chainA, suite.chainB)
+		suite.coordinator.Setup(path)
+		receiver = suite.chainB.SenderAccount.GetAddress().String() // must be explicitly changed in malleate
+
+		memo = ""                           // can be explicitly changed in malleate
+		amount = sdkmath.NewInt(100)        // must be explicitly changed in malleate
+		expEscrowAmount = sdkmath.ZeroInt() // total amount in escrow of voucher denom on receiving chain
+
+		// denom trace of tokens received on chain B and the associated expected metadata
+		denomTraceOnB := types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
+		expDenomMetadataOnB := banktypes.Metadata{
+			Description: fmt.Sprintf("IBC token from %s", denomTraceOnB.GetFullDenomPath()),
+			DenomUnits: []*banktypes.DenomUnit{
+				{
+					Denom:    denomTraceOnB.GetBaseDenom(),
+					Exponent: 0,
+				},
+			},
+			Base:    denomTraceOnB.IBCDenom(),
+			Display: denomTraceOnB.GetFullDenomPath(),
+			Name:    fmt.Sprintf("%s IBC token", denomTraceOnB.GetFullDenomPath()),
+			Symbol:  strings.ToUpper(denomTraceOnB.GetBaseDenom()),
+		}
+		return path, denomTraceOnB, expDenomMetadataOnB
 	}
 
 	testCases := []struct {
@@ -357,61 +395,22 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		suite.Run(fmt.Sprintf("Case %s", tc.msg), func() {
 			suite.SetupTest() // reset
 
-			path := ibctesting.NewTransferPath(suite.chainA, suite.chainB)
-			suite.coordinator.Setup(path)
-			receiver = suite.chainB.SenderAccount.GetAddress().String() // must be explicitly changed in malleate
-
-			memo = ""                           // can be explicitly changed in malleate
-			amount = sdkmath.NewInt(100)        // must be explicitly changed in malleate
-			expEscrowAmount = sdkmath.ZeroInt() // total amount in escrow of voucher denom on receiving chain
-
-			// denom trace of tokens received on chain B and the associated expected metadata
-			denomTraceOnB := types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
-			expDenomMetadataOnB := banktypes.Metadata{
-				Description: fmt.Sprintf("IBC token from %s", denomTraceOnB.GetFullDenomPath()),
-				DenomUnits: []*banktypes.DenomUnit{
-					{
-						Denom:    denomTraceOnB.GetBaseDenom(),
-						Exponent: 0,
-					},
-				},
-				Base:    denomTraceOnB.IBCDenom(),
-				Display: denomTraceOnB.GetFullDenomPath(),
-				Name:    fmt.Sprintf("%s IBC token", denomTraceOnB.GetFullDenomPath()),
-				Symbol:  strings.ToUpper(denomTraceOnB.GetBaseDenom()),
-			}
+			path, denomTraceOnB, expDenomMetadataOnB := configureTestVariables()
 
 			seq := uint64(1)
 
 			if tc.recvIsSource {
-				// send coin from chainB to chainA, receive them, acknowledge them, and send back to chainB
-				coinFromBToA := sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100))
-				res := interchainCoinTransfer(suite.chainB, path.EndpointB, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), mockHeight, memo)
-				//transferMsg := types.NewMsgTransfer(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), mockHeight, 0, memo)
-				//res, err := suite.chainB.SendMsgs(transferMsg)
-				//suite.Require().NoError(err) // message committed
-
-				packet, err := ibctesting.ParsePacketFromEvents(res.Events)
-				suite.Require().NoError(err)
-
-				err = path.RelayPacket(packet)
-				suite.Require().NoError(err) // relay committed
-
+				// transfer coin from chainB to chainA, chainA will send it back later
+				//making chainB the source and receiver
+				transferToSenderChain(path, path.EndpointB, path.EndpointA)
 				seq++
-
-				// NOTE: trace must be explicitly changed in malleate to test invalid cases
-				trace = types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointA.ChannelConfig.PortID, path.EndpointA.ChannelID, sdk.DefaultBondDenom))
 			} else {
 				trace = types.ParseDenomTrace(sdk.DefaultBondDenom)
 			}
 
 			// send coin from chainA to chainB
 			coin := sdk.NewCoin(trace.IBCDenom(), amount)
-			interchainCoinTransfer(suite.chainA, path.EndpointA, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, mockHeight, memo)
-
-			//transferMsg := types.NewMsgTransfer(path.EndpointA.ChannelConfig.PortID, path.EndpointA.ChannelID, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, mockHeight, 0, memo)
-			//_, err := suite.chainA.SendMsgs(transferMsg)
-			//suite.Require().NoError(err) // message committed
+			interchainCoinTransfer(suite, suite.chainA, path.EndpointA, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, mockHeight, memo)
 
 			tc.malleate()
 
@@ -918,4 +917,13 @@ func (suite *KeeperTestSuite) TestOnTimeoutPacketSetsTotalEscrowAmountForSourceI
 	// check total amount in escrow of sent token on sending chain
 	totalEscrowChainB = suite.chainB.GetSimApp().TransferKeeper.GetTotalEscrowForDenom(suite.chainB.GetContext(), coin.GetDenom())
 	suite.Require().Equal(sdkmath.ZeroInt(), totalEscrowChainB.Amount)
+}
+
+func interchainCoinTransfer(suite *KeeperTestSuite, chain *ibctesting.TestChain, endpoint *ibctesting.Endpoint, coin sdk.Coin, sender, receiver string, height clienttypes.Height, memo string) *abcitypes.ExecTxResult {
+	transferMsg := types.NewMsgTransfer(endpoint.ChannelConfig.PortID, endpoint.ChannelID, coin, sender, receiver, height, 0, memo)
+	res, err := chain.SendMsgs(transferMsg)
+
+	suite.Require().NoError(err) // message committed
+
+	return res
 }
