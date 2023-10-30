@@ -2,6 +2,7 @@ package keeper_test
 
 import (
 	"fmt"
+	abcitypes "github.com/cometbft/cometbft/abci/types"
 	"strings"
 
 	sdkmath "cosmossdk.io/math"
@@ -254,6 +255,17 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		expEscrowAmount sdkmath.Int // total amount in escrow for denom on receiving chain
 	)
 
+	mockHeight := clienttypes.NewHeight(1, 110)
+
+	interchainCoinTransfer := func(chain *ibctesting.TestChain, endpoint *ibctesting.Endpoint, coin sdk.Coin, sender, receiver string, height clienttypes.Height, memo string) *abcitypes.ExecTxResult {
+		// send coin from chainA to chainB
+		transferMsg := types.NewMsgTransfer(endpoint.ChannelConfig.PortID, endpoint.ChannelID, coin, sender, receiver, height, 0, memo)
+		res, err := chain.SendMsgs(transferMsg)
+		suite.Require().NoError(err) // message committed
+
+		return res
+	}
+
 	testCases := []struct {
 		msg          string
 		malleate     func()
@@ -374,9 +386,10 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			if tc.recvIsSource {
 				// send coin from chainB to chainA, receive them, acknowledge them, and send back to chainB
 				coinFromBToA := sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100))
-				transferMsg := types.NewMsgTransfer(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), clienttypes.NewHeight(1, 110), 0, memo)
-				res, err := suite.chainB.SendMsgs(transferMsg)
-				suite.Require().NoError(err) // message committed
+				res := interchainCoinTransfer(suite.chainB, path.EndpointB, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), mockHeight, memo)
+				//transferMsg := types.NewMsgTransfer(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, coinFromBToA, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), mockHeight, 0, memo)
+				//res, err := suite.chainB.SendMsgs(transferMsg)
+				//suite.Require().NoError(err) // message committed
 
 				packet, err := ibctesting.ParsePacketFromEvents(res.Events)
 				suite.Require().NoError(err)
@@ -394,16 +407,18 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 			// send coin from chainA to chainB
 			coin := sdk.NewCoin(trace.IBCDenom(), amount)
-			transferMsg := types.NewMsgTransfer(path.EndpointA.ChannelConfig.PortID, path.EndpointA.ChannelID, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, clienttypes.NewHeight(1, 110), 0, memo)
-			_, err := suite.chainA.SendMsgs(transferMsg)
-			suite.Require().NoError(err) // message committed
+			interchainCoinTransfer(suite.chainA, path.EndpointA, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, mockHeight, memo)
+
+			//transferMsg := types.NewMsgTransfer(path.EndpointA.ChannelConfig.PortID, path.EndpointA.ChannelID, coin, suite.chainA.SenderAccount.GetAddress().String(), receiver, mockHeight, 0, memo)
+			//_, err := suite.chainA.SendMsgs(transferMsg)
+			//suite.Require().NoError(err) // message committed
 
 			tc.malleate()
 
 			data := types.NewFungibleTokenPacketData(trace.GetFullDenomPath(), amount.String(), suite.chainA.SenderAccount.GetAddress().String(), receiver, memo)
 			packet := channeltypes.NewPacket(data.GetBytes(), seq, path.EndpointA.ChannelConfig.PortID, path.EndpointA.ChannelID, path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, clienttypes.NewHeight(1, 100), 0)
 
-			err = suite.chainB.GetSimApp().TransferKeeper.OnRecvPacket(suite.chainB.GetContext(), packet, data)
+			err := suite.chainB.GetSimApp().TransferKeeper.OnRecvPacket(suite.chainB.GetContext(), packet, data)
 
 			// check total amount in escrow of received token denom on receiving chain
 			totalEscrow := suite.chainB.GetSimApp().TransferKeeper.GetTotalEscrowForDenom(suite.chainB.GetContext(), sdk.DefaultBondDenom)
