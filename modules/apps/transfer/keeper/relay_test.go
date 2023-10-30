@@ -400,8 +400,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			seq := uint64(1)
 
 			if tc.recvIsSource {
-				// transfer coin from chainB to chainA, chainA will send it back later
-				//making chainB the source and receiver
+				// transfer coin from chainB to chainA so that chainA can send it back
 				transferToSenderChain(path, path.EndpointB, path.EndpointA)
 				seq++
 			} else {
