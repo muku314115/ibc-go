@@ -127,8 +127,7 @@ func (suite *KeeperTestSuite) TestSendTransfer() {
 			expEscrowAmount = sdkmath.ZeroInt()
 
 			// create IBC token on chainA
-			transferMsg := types.NewMsgTransfer(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, coin, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), suite.chainA.GetTimeoutHeight(), 0, "")
-			result, err := suite.chainB.SendMsgs(transferMsg)
+			result, err := interchainCoinTransfer(suite.chainB, path.EndpointB, coin, suite.chainB.SenderAccount.GetAddress().String(), suite.chainA.SenderAccount.GetAddress().String(), suite.chainA.GetTimeoutHeight(), 0, "")
 			suite.Require().NoError(err) // message committed
 
 			packet, err := ibctesting.ParsePacketFromEvents(result.Events)
@@ -204,15 +203,7 @@ func (suite *KeeperTestSuite) TestSendTransferSetsTotalEscrowAmountForSourceIBCT
 
 	// create IBC token on chain B with denom trace "transfer/channel-0/stake"
 	coin := sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100))
-	transferMsg := types.NewMsgTransfer(
-		path1.EndpointA.ChannelConfig.PortID,
-		path1.EndpointA.ChannelID,
-		coin,
-		suite.chainA.SenderAccount.GetAddress().String(),
-		suite.chainB.SenderAccount.GetAddress().String(),
-		suite.chainB.GetTimeoutHeight(), 0, "",
-	)
-	result, err := suite.chainA.SendMsgs(transferMsg)
+	result, err := interchainCoinTransfer(suite.chainA, path1.EndpointA, coin, suite.chainA.SenderAccount.GetAddress().String(), suite.chainB.SenderAccount.GetAddress().String(), suite.chainB.GetTimeoutHeight(), 0, "")
 	suite.Require().NoError(err) // message committed
 
 	packet, err := ibctesting.ParsePacketFromEvents(result.Events)
@@ -275,35 +266,6 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 		// NOTE: trace must be explicitly changed in malleate to test invalid cases
 		trace = types.ParseDenomTrace(types.GetPrefixedDenom(destination.ChannelConfig.PortID, destination.ChannelID, sdk.DefaultBondDenom))
-	}
-
-	// configure path, denomTrace and metadata
-	// reset vars
-	configureTestVariables := func() *ibctesting.Path {
-		path := ibctesting.NewTransferPath(suite.chainA, suite.chainB)
-		suite.coordinator.Setup(path)
-		receiver = suite.chainB.SenderAccount.GetAddress().String() // must be explicitly changed in malleate
-
-		memo = ""                           // can be explicitly changed in malleate
-		amount = sdkmath.NewInt(100)        // must be explicitly changed in malleate
-		expEscrowAmount = sdkmath.ZeroInt() // total amount in escrow of voucher denom on receiving chain
-
-		// denom trace of tokens received on chain B and the associated expected metadata
-		denomTraceOnB = types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
-		expDenomMetadataOnB = banktypes.Metadata{
-			Description: fmt.Sprintf("IBC token from %s", denomTraceOnB.GetFullDenomPath()),
-			DenomUnits: []*banktypes.DenomUnit{
-				{
-					Denom:    denomTraceOnB.GetBaseDenom(),
-					Exponent: 0,
-				},
-			},
-			Base:    denomTraceOnB.IBCDenom(),
-			Display: denomTraceOnB.GetFullDenomPath(),
-			Name:    fmt.Sprintf("%s IBC token", denomTraceOnB.GetFullDenomPath()),
-			Symbol:  strings.ToUpper(denomTraceOnB.GetBaseDenom()),
-		}
-		return path
 	}
 
 	verifyRecvIsSourceMetaData := func() {
@@ -409,7 +371,29 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		suite.Run(fmt.Sprintf("Case %s", tc.msg), func() {
 			suite.SetupTest() // reset
 
-			path := configureTestVariables()
+			path := ibctesting.NewTransferPath(suite.chainA, suite.chainB)
+			suite.coordinator.Setup(path)
+			receiver = suite.chainB.SenderAccount.GetAddress().String() // must be explicitly changed in malleate
+
+			memo = ""                           // can be explicitly changed in malleate
+			amount = sdkmath.NewInt(100)        // must be explicitly changed in malleate
+			expEscrowAmount = sdkmath.ZeroInt() // total amount in escrow of voucher denom on receiving chain
+
+			// denom trace of tokens received on chain B and the associated expected metadata
+			denomTraceOnB = types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
+			expDenomMetadataOnB = banktypes.Metadata{
+				Description: fmt.Sprintf("IBC token from %s", denomTraceOnB.GetFullDenomPath()),
+				DenomUnits: []*banktypes.DenomUnit{
+					{
+						Denom:    denomTraceOnB.GetBaseDenom(),
+						Exponent: 0,
+					},
+				},
+				Base:    denomTraceOnB.IBCDenom(),
+				Display: denomTraceOnB.GetFullDenomPath(),
+				Name:    fmt.Sprintf("%s IBC token", denomTraceOnB.GetFullDenomPath()),
+				Symbol:  strings.ToUpper(denomTraceOnB.GetBaseDenom()),
+			}
 
 			seq := uint64(1)
 
