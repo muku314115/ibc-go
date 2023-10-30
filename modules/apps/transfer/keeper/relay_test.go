@@ -248,18 +248,19 @@ func (suite *KeeperTestSuite) TestSendTransferSetsTotalEscrowAmountForSourceIBCT
 // malleate function allows for testing invalid cases.
 func (suite *KeeperTestSuite) TestOnRecvPacket() {
 	var (
-		trace           types.DenomTrace
-		amount          sdkmath.Int
-		receiver        string
-		memo            string
-		expEscrowAmount sdkmath.Int // total amount in escrow for denom on receiving chain
+		trace               types.DenomTrace
+		amount              sdkmath.Int
+		receiver            string
+		memo                string
+		expEscrowAmount     sdkmath.Int // total amount in escrow for denom on receiving chain
+		denomTraceOnB       types.DenomTrace
+		expDenomMetadataOnB banktypes.Metadata
 	)
 
 	mockHeight := clienttypes.NewHeight(1, 110)
 
 	// taking one chain as the source, send coin to the other chain, receive and acknowledge
 	// this is mainly for cases where the receiving chain is also the source chain
-	// i.e. chainB sends coin to chainA(now), then chainA(new sender) sends it back
 	transferToSenderChain := func(path *ibctesting.Path, source, destination *ibctesting.Endpoint) {
 		// send coin from chainB to chainA, receive them, acknowledge them, and send back to chainB
 		coinFromBToA := sdk.NewCoin(sdk.DefaultBondDenom, amount)
@@ -277,7 +278,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 	// configure path, denomTrace and metadata
 	// reset vars
-	configureTestVariables := func() (*ibctesting.Path, types.DenomTrace, banktypes.Metadata) {
+	configureTestVariables := func() *ibctesting.Path {
 		path := ibctesting.NewTransferPath(suite.chainA, suite.chainB)
 		suite.coordinator.Setup(path)
 		receiver = suite.chainB.SenderAccount.GetAddress().String() // must be explicitly changed in malleate
@@ -287,8 +288,8 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		expEscrowAmount = sdkmath.ZeroInt() // total amount in escrow of voucher denom on receiving chain
 
 		// denom trace of tokens received on chain B and the associated expected metadata
-		denomTraceOnB := types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
-		expDenomMetadataOnB := banktypes.Metadata{
+		denomTraceOnB = types.ParseDenomTrace(types.GetPrefixedDenom(path.EndpointB.ChannelConfig.PortID, path.EndpointB.ChannelID, sdk.DefaultBondDenom))
+		expDenomMetadataOnB = banktypes.Metadata{
 			Description: fmt.Sprintf("IBC token from %s", denomTraceOnB.GetFullDenomPath()),
 			DenomUnits: []*banktypes.DenomUnit{
 				{
@@ -301,7 +302,18 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			Name:    fmt.Sprintf("%s IBC token", denomTraceOnB.GetFullDenomPath()),
 			Symbol:  strings.ToUpper(denomTraceOnB.GetBaseDenom()),
 		}
-		return path, denomTraceOnB, expDenomMetadataOnB
+		return path
+	}
+
+	verifyRecvIsSourceMetaData := func() {
+		_, found := suite.chainB.GetSimApp().BankKeeper.GetDenomMetaData(suite.chainB.GetContext(), sdk.DefaultBondDenom)
+		suite.Require().False(found)
+	}
+
+	verifyMetaData := func() {
+		denomMetadata, found := suite.chainB.GetSimApp().BankKeeper.GetDenomMetaData(suite.chainB.GetContext(), denomTraceOnB.IBCDenom())
+		suite.Require().True(found)
+		suite.Require().Equal(expDenomMetadataOnB, denomMetadata)
 	}
 
 	testCases := []struct {
@@ -309,33 +321,34 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		malleate     func()
 		recvIsSource bool // the receiving chain is the source of the coin originally
 		expPass      bool
+		verify       func()
 	}{
 		{
 			"success receive on source chain",
-			func() {}, true, true,
+			func() {}, false, true, verifyRecvIsSourceMetaData,
 		},
 		{
 			"success receive on source chain of half the amount",
 			func() {
 				amount = sdkmath.NewInt(50)
 				expEscrowAmount = sdkmath.NewInt(50)
-			}, true, true,
+			}, true, true, verifyRecvIsSourceMetaData,
 		},
 		{
 			"success receive on source chain with memo",
 			func() {
 				memo = "memo"
-			}, true, true,
+			}, true, true, verifyRecvIsSourceMetaData,
 		},
 		{
 			"success receive with coin from another chain as source",
-			func() {}, false, true,
+			func() {}, false, true, verifyMetaData,
 		},
 		{
 			"success receive with coin from another chain as source with memo",
 			func() {
 				memo = "memo"
-			}, false, true,
+			}, false, true, verifyMetaData,
 		},
 		{
 			"empty coin",
@@ -343,14 +356,14 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 				trace = types.DenomTrace{}
 				amount = sdkmath.ZeroInt()
 				expEscrowAmount = sdkmath.NewInt(100)
-			}, true, false,
+			}, true, false, nil,
 		},
 		{
 			"invalid receiver address",
 			func() {
 				receiver = "gaia1scqhwpgsmr6vmztaa7suurfl52my6nd2kmrudl"
 				expEscrowAmount = sdkmath.NewInt(100)
-			}, true, false,
+			}, true, false, nil,
 		},
 
 		// onRecvPacket
@@ -359,7 +372,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			"failure: mint zero coin",
 			func() {
 				amount = sdkmath.ZeroInt()
-			}, false, false,
+			}, false, false, nil,
 		},
 
 		// - coin being sent back to original chain (chainB)
@@ -368,7 +381,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			func() {
 				amount = sdkmath.NewInt(1000000)
 				expEscrowAmount = sdkmath.NewInt(100)
-			}, true, false,
+			}, true, false, nil,
 		},
 
 		// - coin being sent to module address on chainA
@@ -376,7 +389,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			"failure: receive on module account",
 			func() {
 				receiver = suite.chainB.GetSimApp().AccountKeeper.GetModuleAddress(types.ModuleName).String()
-			}, false, false,
+			}, false, false, nil,
 		},
 
 		// - coin being sent back to original chain (chainB) to module address
@@ -385,7 +398,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 			func() {
 				receiver = suite.chainB.GetSimApp().AccountKeeper.GetModuleAddress(types.ModuleName).String()
 				expEscrowAmount = sdkmath.NewInt(100)
-			}, true, false,
+			}, true, false, nil,
 		},
 	}
 
@@ -395,7 +408,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 		suite.Run(fmt.Sprintf("Case %s", tc.msg), func() {
 			suite.SetupTest() // reset
 
-			path, denomTraceOnB, expDenomMetadataOnB := configureTestVariables()
+			path := configureTestVariables()
 
 			seq := uint64(1)
 
@@ -424,15 +437,7 @@ func (suite *KeeperTestSuite) TestOnRecvPacket() {
 
 			if tc.expPass {
 				suite.Require().NoError(err)
-
-				if tc.recvIsSource {
-					_, found := suite.chainB.GetSimApp().BankKeeper.GetDenomMetaData(suite.chainB.GetContext(), sdk.DefaultBondDenom)
-					suite.Require().False(found)
-				} else {
-					denomMetadata, found := suite.chainB.GetSimApp().BankKeeper.GetDenomMetaData(suite.chainB.GetContext(), denomTraceOnB.IBCDenom())
-					suite.Require().True(found)
-					suite.Require().Equal(expDenomMetadataOnB, denomMetadata)
-				}
+				tc.verify()
 			} else {
 				suite.Require().Error(err)
 			}
